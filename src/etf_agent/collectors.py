@@ -519,12 +519,22 @@ def fetch_macro_indicators(
 
 
 def load_extra_signals(signal_dir: str | Path = "inputs/extra_signals") -> list[ExtraSignalCard]:
-    """讀取本機 `inputs/extra_signals/*.json` 隊友或課堂 Lab 外掛訊號卡。"""
+    """讀取本機 `inputs/extra_signals/*.json` 隊友或課堂 Lab 外掛訊號卡。
+    
+    防呆與防污染機制：
+    1. 自動排除檔名包含 sample, example, test, dummy, mock 的示範檔案。
+    2. 自動驗證情報有效性與成分股白名單。
+    """
     p_dir = Path(signal_dir)
     if not p_dir.exists():
         return []
     cards: list[ExtraSignalCard] = []
+    ignored_keywords = ("sample", "example", "test", "dummy", "mock")
     for jf in sorted(p_dir.glob("*.json")):
+        # 防呆 1：過濾範例檔
+        if any(kw in jf.stem.lower() for kw in ignored_keywords):
+            print(f"[INFO] 略過示範/測試訊號檔：{jf.name}")
+            continue
         try:
             raw = json.loads(jf.read_text(encoding="utf-8"))
             items = raw if isinstance(raw, list) else [raw]
