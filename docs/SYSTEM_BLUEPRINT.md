@@ -71,14 +71,29 @@ flowchart LR
   * **Phase 2（專題與組員擴充線 — 插槽化接入）**：將課程 Lab 的「財報分析」、組員討論的「市場指標／情緒分析」做成標準化的**分析師子節點（Analyst Sub-nodes）**，各自產出 `Sources (S)`、`Observations (O)` 與初步 `Inferences (I)` 餵給 PM Agent。
   * **Phase 3（競賽進階深度線 — 時間充裕時升級）**：加入「多空辯論／反方審計員（專攻 `counter_evidence`）」與「昨日復盤反思記憶（Reflection on `prev_day_orders`）」。
 
-### ✅ 決策 2：可擴充的分析師插槽與 `AnalystCard` 標準介面
+### ✅ 決策 2：可擴充的分析師插槽與 `AnalystCard` 匯流排 ＋ JAB 數值化評級與因果圖譜更新
 
-* **平行分析師層（Analyst Layer）**：在 PM Agent 之前設立可自由增減的分析師插槽（Phase 1 先開「基礎市場價量分析師」，Phase 2 隨時掛載「課程 Lab 財報分析師」與「新聞/指標分析師」）。
+* **平行分析師層（Analyst Layer）**：在 PM Agent 之前設立可自由增減的分析師適配器（`InstitutionalFlowAdapter` 籌碼、`RevenueFundamentalAdapter` 月營收、`CustomFileSignalAdapter` 外部檔案）。
 * **統一輸出契約（`AnalystCard`）**：每個分析師模組只需回傳包含三要素的結構：
   1. **來源（Source）**：`authority`、`url`、`content_as_of`。
   2. **客觀事實與數值（Fact & Values）**：純事實 `statement` ＋ 至少一個數值鍵值對 `values`（由源頭 Python 鎖定，防止 LLM 幻覺竄改數字）。
-  3. **初步推論建議（Draft Inference，選填）**：供下游 PM Agent 綜合裁決。
-* **編號匯流排（Evidence Hub）**：自動將所有分析師回傳的卡片去重並連續編號為 `S1..Sn` 與 `O1..On`，無縫接軌下游 PM Agent。
+  3. **品質閘門（Quality Gate）**：防偽檢驗、白名單過濾、非空檢查與來源 URL 驗證。
+* **JAB 輕量 0~5 級純數值化評級（避免文字多次轉譯失真）**：
+  - 捨棄純文字模糊形容，採用嚴格數值化標準：
+    - `0 (Noise)`：無關/雜訊
+    - `1 (Initial)`：初信/微弱傳導 ($\pm 0.1\% \sim 0.3\%$)
+    - `2 (Moderate)`：中度傳導 ($\pm 0.3\% \sim 1.0\%$)
+    - `3 (Significant)`：顯著影響 ($\pm 1.0\% \sim 3.0\%$)
+    - `4 (Breakout)`：核心爆發 ($\pm 3.0\% \sim 6.0\%$)
+    - `5 (Critical Alert)`：緊急黑天鵝/突發斷鏈 ($> \pm 6.0\%$)
+  - 符號化方向：`direction = +1` (看多), `-1` (看空), `0` (中性)。
+* **因果鏈連線實體化（LinkDossier 關聯更新）**：
+  - 打分後的事件不再散落各處，而是**直接寫入並釘在 A ➔ B 的因果連線（`LinkDossier`）上**。
+  - 具備類似 Obsidian 雙向筆記關聯視圖之理想形態：點開兩檔股票之間的連線，即可完整展開：
+    1. 關聯背景與業務傳導機制
+    2. 今日新事件與正反證據清單（`supporting_evidences` / `weakening_evidences`）
+    3. 掛載之歷史時空錨點（`HistoricalAnchor`：具體樣本區間如 2021~2026、指標趨勢函數答案、鈍化天數與歷史反應空間）
+  - 作為多方分析師（Bull）與空方風控師（Bear）辯論時的唯一權威子彈庫。
 
 ### ✅ 決策 3：公開說明書主題與「上市櫃混血」防撞衫配置（破解 `RULE-POR-07` Active Share $\ge 15\%$）
 

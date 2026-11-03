@@ -21,6 +21,7 @@ from etf_agent.collectors import (  # noqa: E402
     merge_quotes_with_datapack,
     parse_datapack,
 )
+from etf_agent.central_dashboard import generate_interactive_center_html  # noqa: E402
 from etf_agent.dashboard import generate_html_dashboard  # noqa: E402
 from etf_agent.graph import run_dplan_pipeline  # noqa: E402
 
@@ -77,7 +78,9 @@ def main() -> int:
         return 1
     print(f"[OK] D-Plan: {state['dplan_path']}")
     html_path = generate_html_dashboard(state['dplan_path'])
-    print(f"[OK] 視覺化儀表板已產出: {html_path}")
+    print(f"[OK] 單日視覺化儀表板已產出: {html_path}")
+    central_path = generate_interactive_center_html()
+    print(f"[OK] 全歷史戰情中心已同步更新: {central_path}")
     return 0
 
 

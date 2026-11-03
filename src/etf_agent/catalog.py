@@ -13,6 +13,8 @@ from typing import Any
 from etf_agent.collectors import QuoteRecord
 from etf_agent.dossier import DossierLedger
 from etf_agent.funnel import FocusCandidate
+from etf_agent.impact_ledger import ImpactLedger
+from etf_agent.signals.base import AnalystCard
 from etf_agent.universe import UNIVERSE_150
 
 # 預設內建供應鏈因果圖譜聚落
@@ -59,6 +61,8 @@ class EvidenceCatalog:
         raw_items = [
             CatalogItem("pv.l1_daily", "L1", "前日收盤價量事實", "收盤價、漲跌幅、成交量比、昨日持有股數與權重", preload=True),
             CatalogItem("pv.l2_trend", "L2", "波段趨勢與動能均線", "近 5 日/20 日價格累積漲跌幅與相對強弱", params=["ticker"]),
+            CatalogItem("chip.l2_institutional", "L2", "三大法人籌碼動向", "外資與投信連續買賣超張數與集中度", params=["ticker"]),
+            CatalogItem("fund.l2_revenue", "L2", "MOPS 月營收與基本面動能", "最新月營收年增率 (YoY)、月增率與連續成長趨勢", params=["ticker"]),
             CatalogItem("sc.l1_relations", "L1", "上下游鏈結基本關係", "標的於台股主流聚落之上中下游位置", preload=True),
             CatalogItem("sc.l2_impacts", "L2", "連帶傳導履歷與強度", "龍頭股事件引發之連帶傳導強度、支持與削弱證據", params=["ticker"]),
             CatalogItem("pr.l1_status", "L1", "當前投組部位狀態", "現有持股檔數、可用現金比率、各股最新權重與法規上限", preload=True),
@@ -82,6 +86,8 @@ class EvidenceCatalog:
         focus_candidate: FocusCandidate | None,
         ledger: DossierLedger | None,
         quotes: dict[str, QuoteRecord] | None = None,
+        impact_ledger: ImpactLedger | None = None,
+        signals: list[AnalystCard] | None = None,
     ) -> dict[str, Any]:
         """根據 AI 指定的論據 ID 與個股代號，展開深度細節。"""
         if item_id == "pv.l2_trend":
@@ -95,6 +101,47 @@ class EvidenceCatalog:
                 "momentum_status": momentum_status,
                 "relative_strength": f"相對大盤偏{'強' if chg > 0 else '弱'}",
                 "volume_behavior": f"量能放大 {vr:.2f} 倍" if vr > 1.2 else "成交量萎縮",
+            }
+
+        elif item_id == "chip.l2_institutional":
+            # 展開三大法人籌碼
+            chip_card = next((c for c in (signals or []) if c.ticker == ticker and c.category == "chip"), None)
+            if chip_card:
+                return {
+                    "ticker": ticker,
+                    "statement": chip_card.statement,
+                    "foreign_net_lots": chip_card.values.get("foreign_net_lots", 0.0),
+                    "trust_net_lots": chip_card.values.get("trust_net_lots", 0.0),
+                    "total_net_lots": chip_card.values.get("total_net_lots", 0.0),
+                    "consecutive_days": chip_card.values.get("consecutive_days", 1.0),
+                    "polarity": chip_card.polarity,
+                    "source_url": chip_card.url,
+                }
+            return {
+                "ticker": ticker,
+                "statement": "三大法人進出平穩，無顯著單向集中加減碼",
+                "total_net_lots": 0.0,
+                "polarity": "neutral",
+            }
+
+        elif item_id == "fund.l2_revenue":
+            # 展開 MOPS 月營收與成長率
+            rev_card = next((c for c in (signals or []) if c.ticker == ticker and c.category == "fundamental"), None)
+            if rev_card:
+                return {
+                    "ticker": ticker,
+                    "statement": rev_card.statement,
+                    "revenue_yoy_pct": rev_card.values.get("revenue_yoy_pct", 0.0),
+                    "revenue_mom_pct": rev_card.values.get("revenue_mom_pct", 0.0),
+                    "consecutive_growth_months": rev_card.values.get("consecutive_growth_months", 0.0),
+                    "polarity": rev_card.polarity,
+                    "source_url": rev_card.url,
+                }
+            return {
+                "ticker": ticker,
+                "statement": "月營收符合歷史平均水準，無顯著超預期或劇烈衰退",
+                "revenue_yoy_pct": 0.0,
+                "polarity": "neutral",
             }
 
         elif item_id == "sc.l2_impacts":
@@ -111,7 +158,23 @@ class EvidenceCatalog:
                     break
             if not cluster_info:
                 cluster_info = {"cluster_name": "一般產業權值", "role": "獨立標的", "transmission_mechanism": "內需或獨立週期傳導"}
-            
+
+            # 串聯 ImpactLedger 中的特定個股重大因果事件（含衰減後有效強度）
+            impact_events = []
+            if impact_ledger:
+                top_ticker_impacts = impact_ledger.get_top_impacts_for_ticker(ticker, top_n=3)
+                for r in top_ticker_impacts:
+                    impact_events.append({
+                        "event_id": r.event_id,
+                        "path": f"{r.source_ticker} -> {r.target_ticker}",
+                        "direction": r.direction,
+                        "magnitude": r.magnitude,
+                        "effective_rating": r.current_rating,
+                        "date_recorded": r.date_recorded,
+                        "description": r.event_description,
+                    })
+            cluster_info["recent_impact_events"] = impact_events
+
             # 附帶 DossierLedger 內的歷史正負證據
             bull_cnt, bear_cnt = 0, 0
             if ledger:

@@ -83,11 +83,12 @@ collect_and_funnel
 
 ## 4. 分階段計畫
 
-| 階段 | 內容 | 改動檔案 | 驗收標準 | 預估 |
+| 階段 | 內容 | 改動檔案 | 驗收標準 | 狀態 |
 |---|---|---|---|---|
-| **A**（今晚） | ① AI 提案權限<br>② 論據目錄骨架（價量、組合風險）<br>③ 新 PM 迴圈 + 步數上限 | `pm_agent.py`（拆分重寫）、新增 `catalog.py`、`catalog.yaml`、`graph.py` | 離線測試通過；用 Day 2 測資跑出合規 D-Plan；trace 記錄取用論據 | 約 1~1.5 小時 |
-| **B**（明天） | 影響帳本、供應鏈關係建檔、帳本跨日讀回、前 N 取用 | `dossier.py`、新增 `impact_ledger.py` | 昨日帳本能被今日讀取並影響評級 | 半天 |
-| **C**（之後） | 接三大法人、月營收（免費源），補 L2/L3 | `collectors.py`、`catalog.yaml` | 目錄新增項目後 AI 可取用 | 半天 |
+| **A** | ① AI 提案權限<br>② 論據目錄骨架（價量、組合風險）<br>③ 新 PM 迴圈 + 步數上限 | `pm_agent.py`、`catalog.py`、`catalog.yaml`、`graph.py` | 離線測試通過；用 Day 2 測資跑出合規 D-Plan；trace 記錄取用論據 | ✅ 已完成 |
+| **B** | ① 跨日記憶自動讀取昨日存檔<br>② 時效半衰期衰減 (Decay Engine)<br>③ Top-N 因果評級注入 PM 提案 | `dossier.py`、`impact_ledger.py`、`graph.py`、`catalog.py` | 昨日帳本能被今日自動讀取並折舊衰減；全單元測試綠燈 | ✅ 已完成 |
+| **C** | ① 外部訊號適配匯流排 (Signal Adapter Bus)<br>② 品質閘門防偽 (URL/Authority/數值鎖定)<br>③ 籌碼與月營收適配器及熱插拔資料夾 | `src/etf_agent/signals/` 全套模組、`catalog.py`、`graph.py` | 24 項測試全數通過；籌碼與營收特徵無痛進場 | ✅ 已完成 |
+| **D**（進行中） | ① **JAB 0~5 級純數值化打分評級器**（避免文字多次轉譯失真）<br>② **歷史時空錨點插槽 (HistoricalAnchor)**：具體樣本區間(如 2021-2026)、指標趨勢函數答案、鈍化天數與反應空間<br>③ **因果鏈網連線實體化**：打分結果直接掛載寫入 `LinkDossier`（A ➔ B 線條上），作為 Obsidian 式關聯視圖與多空辯論之唯一客觀論據庫 | `dossier.py`、`signals/jab_evaluator.py`、`tests/test_dossier.py` | 數值評級與歷史錨點成功寫入因果連線；支援多空分析師提取精確子彈 | 🎯 本次任務 |
 
 > 保底：階段 A 完成前，現有版本仍可交件。A 完成後先與舊版並排比較再切換。
 

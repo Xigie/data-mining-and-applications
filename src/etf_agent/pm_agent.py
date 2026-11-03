@@ -16,10 +16,12 @@ from typing import Any
 
 from etf_agent.catalog import EvidenceCatalog
 from etf_agent.collectors import DataPackState
+from etf_agent.debate.council import DebateCouncil
 from etf_agent.dossier import DossierLedger
 from etf_agent.funnel import FocusCandidate, FunnelOutput
 from etf_agent.impact_ledger import ImpactLedger
 from etf_agent.llm import extract_text_content, get_llm
+from etf_agent.signals.base import AnalystCard
 from etf_agent.universe import UNIVERSE_150, get_max_weight
 
 _TZ_TAIPEI = timezone(timedelta(hours=8))
@@ -34,6 +36,7 @@ def generate_or_repair_dplan_draft(
     funnel_out: FunnelOutput,
     ledger: DossierLedger,
     impact_ledger: ImpactLedger | None = None,
+    signals: list[AnalystCard] | None = None,
     feedback: str | None = None,
     target_holdings_count: int = 24,
     target_total_stock_weight: float = 0.85,
@@ -96,24 +99,38 @@ def generate_or_repair_dplan_draft(
     thought_traces: list[dict[str, Any]] = []
     llm = get_llm("pm")
 
-    # 獲取全市場 AI 評級最高的前 6 大因果影響事件
-    top_impacts = impact_ledger.get_global_top_impacts(top_n=6)
+    # 獲取全市場 AI 評級最高的前 8 大因果影響事件（含時間衰減後之有效強度）
+    top_impacts = impact_ledger.get_global_top_impacts(top_n=8)
     impact_context = "\n".join([
-        f"- 【{r.direction.upper()} 強度{r.magnitude} 評級{r.ai_rating}】{r.source_ticker} -> {r.target_ticker}: {r.event_description}"
+        f"- 【{r.direction.upper()} 衝擊度{r.magnitude}/5 | 有效評級{r.current_rating:.2f} (原{r.ai_rating}) | 記錄日{r.date_recorded}】{r.source_ticker} -> {r.target_ticker}: {r.event_description}"
         for r in top_impacts
     ])
 
     # -----------------------------------------------------------------------
     # 2. 構建候選名單與 L1 基礎情報，供 AI 自主提案
     # -----------------------------------------------------------------------
+    signal_map: dict[str, list[str]] = {}
+    if signals:
+        for card in signals:
+            if card.category == "chip":
+                lots = card.values.get("total_net_lots", 0.0)
+                tag = f"法人{'買超' if lots > 0 else '賣超'}{abs(lots):.0f}張"
+                signal_map.setdefault(card.ticker, []).append(tag)
+            elif card.category == "fundamental":
+                yoy = card.values.get("revenue_yoy_pct", 0.0)
+                tag = f"營收YoY {yoy:+.1f}%"
+                signal_map.setdefault(card.ticker, []).append(tag)
+
     candidate_summary = []
     for cand in focus_map.values():
         holding_tag = f"持有 {cand.current_shares} 股 (權重 {cand.current_weight*100:.2f}%)" if cand.is_current_holding else "未持有 (新候選)"
+        sig_tags = " | ".join(signal_map.get(cand.ticker, []))
         candidate_summary.append({
             "ticker": cand.ticker,
             "name": cand.name,
             "market": cand.market,
             "holding_status": holding_tag,
+            "signals": sig_tags if sig_tags else "一般/無特殊籌碼營收異動",
             "close_price": cand.close_price,
             "chg_pct": cand.chg_pct,
             "vol_ratio": cand.vol_ratio,
@@ -195,15 +212,47 @@ def generate_or_repair_dplan_draft(
     elif len(final_active_tickers) > 28:
         final_active_tickers = final_active_tickers[:26]
 
+    # -----------------------------------------------------------------------
+    # 4.1 多空辯論議會 (Debate Council)：針對異動標的召開真實多空對質
+    # -----------------------------------------------------------------------
+    debate_council = DebateCouncil()
+    debate_verdicts: dict[str, Any] = {}
+
+    for t in final_active_tickers:
+        cand = focus_map[t]
+        prop = ai_proposals.get(t)
+        # 觸發條件：新買進 (BUY) 或持倉擬加碼/減碼 (ADD/TRIM)
+        is_action_candidate = (not cand.is_current_holding) or (prop and prop.get("action") in ("ADD", "TRIM", "SELL_ALL"))
+        if is_action_candidate:
+            link = ledger.get_link("2330", t) or ledger.get_link(t, "2330")
+            related_impacts = impact_ledger.get_top_impacts_for_ticker(t, top_n=1)
+            metrics_dict = {"anomaly_score": cand.anomaly_score, "chg_pct": cand.chg_pct, "vol_ratio": cand.vol_ratio}
+            if related_impacts:
+                metrics_dict["decision_impact_pct"] = related_impacts[0].ai_rating * 3.0
+
+            verdict = debate_council.conduct_debate(
+                ticker=t,
+                name=cand.name,
+                current_weight=cand.current_weight,
+                link=link,
+                extra_metrics=metrics_dict,
+                use_llm=True,
+            )
+            debate_verdicts[t] = verdict
+
     # 計算目標權重
     raw_weights: dict[str, float] = {}
     for t in final_active_tickers:
         cand = focus_map[t]
-        prop = ai_proposals.get(t)
         hard_max = get_max_weight(t)
-        if prop and "target_weight" in prop:
+        verdict = debate_verdicts.get(t)
+        prop = ai_proposals.get(t)
+
+        if verdict:
+            # 優先採用多空辯論議會裁決權重
+            w_safe = min(hard_max - 0.005, max(0.015, verdict.target_weight))
+        elif prop and "target_weight" in prop:
             w_prop = float(prop["target_weight"])
-            # 依使用者承諾：允許 AI 超出建議區間，但強制鎖在法定上限內
             w_safe = min(hard_max - 0.005, max(0.015, w_prop))
         else:
             w_safe = cand.weight_guide.base_value
@@ -230,24 +279,24 @@ def generate_or_repair_dplan_draft(
         inf_id = f"I{len(inferences) + 1}"
         prop = ai_proposals.get(t)
 
-        # 動態取用深度因果論據
+        # 動態取用深度因果論據與辯論裁決
         related_impacts = impact_ledger.get_top_impacts_for_ticker(t, top_n=1)
         impact_note = f"（連帶因果依據：{related_impacts[0].event_description}）" if related_impacts else ""
+        verdict = debate_verdicts.get(t)
 
-        logic_str = (
-            prop.get("logic", "")
-            if (prop and len(str(prop.get("logic", ""))) >= 20)
-            else (
+        if verdict and len(verdict.logic) >= 15:
+            logic_str = f"【多空對質裁決】{verdict.logic}"
+            counter_str = f"【風控防守警示】{verdict.counter_evidence}"
+        elif prop and len(str(prop.get("logic", ""))) >= 20:
+            logic_str = prop.get("logic", "")
+            counter_str = prop.get("counter_evidence", f"若 {cand.name} 短期拉回或終端需求放緩，需注意權重控制。")
+        else:
+            logic_str = (
                 f"{cand.ticker} ({cand.name}) 前日收盤價為 {cand.close_price:.2f} 元"
                 f"（變動 {cand.chg_pct:+.2f}%，量比 {cand.vol_ratio:.2f} 倍）。"
                 f"{impact_note}經 AI 經理人綜合評估供應鏈傳導定位，配置目標權重 {tw*100:.2f}%。"
             )
-        )
-        counter_str = (
-            prop.get("counter_evidence", "")
-            if (prop and prop.get("counter_evidence"))
-            else f"若 {cand.name} 短期拉回或終端需求放緩，需注意權重控制。"
-        )
+            counter_str = f"若 {cand.name} 短期拉回或終端需求放緩，需注意權重控制。"
 
         inferences.append({
             "inf_id": inf_id,

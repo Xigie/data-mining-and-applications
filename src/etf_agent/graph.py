@@ -28,8 +28,17 @@ from etf_agent.collectors import (
 from etf_agent.decision import build_decide_subgraph
 from etf_agent.dossier import DossierLedger
 from etf_agent.funnel import FunnelOutput, build_funnel_and_observations
+from etf_agent.impact_ledger import ImpactLedger
 from etf_agent.memory import EvidenceStore
 from etf_agent.pm_agent import generate_or_repair_dplan_draft
+from etf_agent.signals import (
+    AnalystCard,
+    CustomFileSignalAdapter,
+    InstitutionalFlowAdapter,
+    RevenueFundamentalAdapter,
+    SignalRegistry,
+    evaluate_and_route_signal,
+)
 from etf_agent.sandbox import (
     VerificationReport,
     align_posture_and_funding,
@@ -49,6 +58,8 @@ class DPlanGraphState(TypedDict, total=False):
     extra_signals: list[ExtraSignalCard] | None
     etf_benchmarks: dict[str, dict[str, float]] | None
     ledger: DossierLedger
+    impact_ledger: ImpactLedger
+    analyst_signals: list[AnalystCard]
     dp_state: DataPackState
     funnel_out: FunnelOutput
     dplan: dict[str, Any]
@@ -63,8 +74,39 @@ class DPlanGraphState(TypedDict, total=False):
 
 def _node_collect_and_funnel(state: DPlanGraphState) -> dict[str, Any]:
     """節點 1 (M2 + M3)：解析 DataPack、更新連結履歷、建立 Focus List 與 S1..Sn / O1..On。"""
-    ledger = state.get("ledger") or DossierLedger()
     dp_state = parse_datapack(state["datapack_input"])
+    runs_dir = Path(state["output_dir"]).parent if state.get("output_dir") else Path("runs")
+    
+    # 跨日記憶讀回：若 state 未給定，則自動從 runs/ 載入前一交易日存檔
+    ledger = state.get("ledger")
+    if ledger is None or len(ledger.stocks) == 0:
+        ledger = DossierLedger.load_latest_or_init(runs_dir, dp_state.trade_date)
+        
+    impact_ledger = state.get("impact_ledger")
+    if impact_ledger is None:
+        impact_ledger = ImpactLedger.load_latest_or_init(runs_dir, dp_state.trade_date)
+    else:
+        impact_ledger.apply_decay(dp_state.trade_date)
+
+    # 驅動外部訊號匯流排 (Signal Adapter Bus) 收集籌碼、營收與自訂訊號
+    snapshot_dir = Path(state["output_dir"]) / "source_snapshots" if state.get("output_dir") else None
+    registry = SignalRegistry(snapshot_dir=snapshot_dir)
+    registry.register_adapter(InstitutionalFlowAdapter(snapshot_dir=snapshot_dir))
+    registry.register_adapter(RevenueFundamentalAdapter(snapshot_dir=snapshot_dir))
+    registry.register_adapter(CustomFileSignalAdapter(snapshot_dir=snapshot_dir))
+    
+    analyst_signals = registry.collect_all_signals(dp_state.trade_date)
+
+    # 執行 JAB 0~5 級數值化評級，並直接將純數值證據釘入 LinkDossier 因果連線網
+    for card in analyst_signals:
+        linked_tgt = None
+        # 若是台積電事件，自動連線至上櫃核心設備廠 3131
+        if card.ticker == "2330":
+            linked_tgt = "3131"
+        elif card.ticker == "2382":
+            linked_tgt = "3017"
+        evaluate_and_route_signal(card, ledger=ledger, linked_target_ticker=linked_tgt)
+
     funnel_out = build_funnel_and_observations(
         dp_state=dp_state,
         external_quotes=state.get("external_quotes"),
@@ -74,6 +116,8 @@ def _node_collect_and_funnel(state: DPlanGraphState) -> dict[str, Any]:
     )
     return {
         "ledger": ledger,
+        "impact_ledger": impact_ledger,
+        "analyst_signals": analyst_signals,
         "dp_state": dp_state,
         "funnel_out": funnel_out,
         "retry_count": 0,
@@ -87,6 +131,8 @@ def _node_pm_agent_draft(state: DPlanGraphState) -> dict[str, Any]:
         dp_state=state["dp_state"],
         funnel_out=state["funnel_out"],
         ledger=state["ledger"],
+        impact_ledger=state.get("impact_ledger"),
+        signals=state.get("analyst_signals"),
         feedback=state.get("sandbox_feedback"),
     )
     # 取出非 Schema 的思考軌跡（跨重試累積），避免污染 D-Plan 並供 finalize 存檔
@@ -168,10 +214,14 @@ def _node_finalize(state: DPlanGraphState) -> dict[str, Any]:
         for trace in state.get("thought_traces") or []:
             f.write(json.dumps(trace, ensure_ascii=False) + "\n")
 
-    # 存檔連結履歷 Ledger
+    # 存檔連結履歷 Ledger 與 影響帳本 ImpactLedger
     ledger = state.get("ledger")
     if ledger:
         ledger.save(p_dir / "dossier_ledger.json")
+
+    impact_ledger = state.get("impact_ledger")
+    if impact_ledger:
+        impact_ledger.save(p_dir / "impact_ledger.json")
 
     return {"dplan_path": str(file_path)}
 
@@ -206,6 +256,7 @@ def run_dplan_pipeline(
     extra_signals: list[ExtraSignalCard] | None = None,
     etf_benchmarks: dict[str, dict[str, float]] | None = None,
     ledger: DossierLedger | None = None,
+    impact_ledger: ImpactLedger | None = None,
     output_dir: str | Path | None = None,
     max_retries: int = 2,
 ) -> DPlanGraphState:
@@ -219,7 +270,8 @@ def run_dplan_pipeline(
         "macros": macros,
         "extra_signals": extra_signals,
         "etf_benchmarks": etf_benchmarks,
-        "ledger": ledger or DossierLedger(),
+        "ledger": ledger,
+        "impact_ledger": impact_ledger,
         "output_dir": str(output_dir) if output_dir else None,
         "max_retries": max_retries,
     }

@@ -22,14 +22,44 @@ from etf_agent.universe import get_max_weight, is_valid_ticker
 
 
 @dataclass
+class HistoricalAnchor:
+    """歷史真實案例錨點（具體樣本區間、指標特徵、函數答案與鈍化預警）。"""
+
+    case_id: str  # 案例代號 (例如 "CASE_2023_COWOS_EXPANSION")
+    sample_period: str  # 樣本區間 (例如 "2021-01 到 2026-06 金融趨勢分析")
+    target_metric: str  # 觀察指標 (例如 "台積電法說資本支出 YoY > 20%")
+    historical_response_pct: float  # 歷史平均實際反應幅度 (例如 4.2 代表 +4.2%)
+    fade_days: int  # 利多鈍化天數 (例如 5 天後日漲幅降至 0.3%)
+    model_output_score: float  # 趨勢模型/函數給出的信心分數 (0.0 ~ 1.0)
+    summary: str  # 人類可讀的事實對照摘要
+
+
+@dataclass
 class EvidenceEntry:
-    """單筆履歷證據條目（可對應 D-Plan 的 Observation 或歷史事件紀錄）。"""
+    """單筆履歷證據條目（以純數值 0~5 級與 direction +1/-1 表達，杜絕文字翻譯失真）。"""
 
     date: str  # 事件日期 YYYY-MM-DD
     obs_ref: str  # 對應當日 D-Plan 的 obs_id (如 "O5") 或歷史事件編號
     summary: str  # 客觀事實或事件描述
     polarity: str  # "positive" (看好/強化連動) 或 "negative" (看壞/削弱連動)
     metrics: dict[str, float] = field(default_factory=dict)  # 相關數值指標
+    impact_level: int = 2  # 0~5 級純數值評級 (0:雜訊, 1:微弱, 2:中度, 3:顯著, 4:核心爆發, 5:緊急黑天鵝)
+    direction: int = 0  # 純數值方向 (+1:看多/強化, -1:看空/削弱, 0:中性)
+    anchor_ref: HistoricalAnchor | None = None  # 掛載之歷史錨點 (若有匹配)
+    generated_by: str = "jev_ai"  # 來源標記: "jev_ai" (由 Jev AI 模型產出) 或 "python_fallback" (降級純規則產出)
+    needs_recalc: bool = False  # 是否標記為需於下一輪連網時由 AI 重新追蹤運算
+
+    def __post_init__(self) -> None:
+        # 若未手動指定 direction，自動依據 polarity 同步
+        if self.direction == 0:
+            if self.polarity == "positive":
+                self.direction = 1
+            elif self.polarity == "negative":
+                self.direction = -1
+
+    def signed_impact_score(self) -> int:
+        """綜合衝擊純數值 [-5 ~ +5]。"""
+        return self.direction * self.impact_level
 
 
 @dataclass
@@ -70,22 +100,42 @@ class StockDossier:
 
 @dataclass
 class LinkDossier:
-    """股票 A 對 股票 B 的連帶因果履歷 (A -> B)。"""
+    """股票 A 對 股票 B 的連帶因果履歷 (A -> B)，如同 Obsidian 雙向關聯筆記之連線實體。"""
 
-    source_ticker: str  # 起點股票 A (例如 "2308" 台達電)
-    target_ticker: str  # 受影響股票 B (例如供應鏈廠商)
-    relation_note: str  # 關聯背景說明 (例如 "機器人與伺服器機櫃機構件供應")
+    source_ticker: str  # 起點股票 A (例如 "2330" 台積電)
+    target_ticker: str  # 受影響股票 B (例如 "3131" 弘塑)
+    relation_note: str  # 關聯背景說明 (例如 "CoWoS 先進封裝濕製程設備供應")
     # 連結強度區間 [0.0 ~ 1.0]：Python 依歷史連動率給初值與範圍，AI 依當下事件性質上下浮動
     strength: BoundedMetric
-    supporting_evidences: list[EvidenceEntry] = field(default_factory=list)  # 🟢 支持本次傳導的證據
-    weakening_evidences: list[EvidenceEntry] = field(default_factory=list)  # 🔴 削弱/與本次業務無關的證據
-    historical_cases: list[str] = field(default_factory=list)
+    supporting_evidences: list[EvidenceEntry] = field(default_factory=list)  # 🟢 看多/強化傳導之數值論據
+    weakening_evidences: list[EvidenceEntry] = field(default_factory=list)  # 🔴 看空/削弱連動之數值論據
+    historical_cases: list[str] = field(default_factory=list)  # 傳統字串案例相容
+    anchors: list[HistoricalAnchor] = field(default_factory=list)  # 具備具體區間與函數答案之歷史時空錨點
 
     def add_evidence(self, entry: EvidenceEntry) -> None:
-        if entry.polarity == "positive":
+        if entry.direction > 0 or entry.polarity == "positive":
             self.supporting_evidences.append(entry)
         else:
             self.weakening_evidences.append(entry)
+        if entry.anchor_ref and entry.anchor_ref not in self.anchors:
+            self.anchors.append(entry.anchor_ref)
+
+    def get_net_causal_impact(self) -> int:
+        """計算這條連線上的淨因果衝擊強度 (加總所有生效證據的 Signed Impact Score)。"""
+        return sum(e.signed_impact_score() for e in self.supporting_evidences) + sum(
+            e.signed_impact_score() for e in self.weakening_evidences
+        )
+
+    def get_latest_anchor_summary(self) -> str | None:
+        """取得掛載在此連線上最新歷史時空錨點的事實與鈍化預警。"""
+        if not self.anchors:
+            return None
+        latest = self.anchors[-1]
+        return (
+            f"【歷史對照錨點 {latest.case_id} ({latest.sample_period})】"
+            f"歷史平均反應 +{latest.historical_response_pct:.1f}%，發酵 {latest.fade_days} 天後漲幅收斂至鈍化。"
+            f"模型信心度 {latest.model_output_score:.2f}：{latest.summary}"
+        )
 
 
 def propose_stock_weight_bounds(
@@ -193,6 +243,10 @@ class DossierLedger:
             )
         return self.links[key]
 
+    def get_link(self, source_ticker: str, target_ticker: str) -> LinkDossier | None:
+        """安全取得既有連結，若不存在則回傳 None。"""
+        return self.links.get((source_ticker, target_ticker))
+
     def propagate_signal(self, source_ticker: str, source_signal: float) -> dict[str, float]:
         """當起點股票 A 發生強度為 source_signal 的事件時，依目前各連結履歷的 current_value 計算對下游 B 的連帶分數。"""
         impacts: dict[str, float] = {}
@@ -209,3 +263,81 @@ class DossierLedger:
             "links": {f"{k[0]}->{k[1]}": asdict(v) for k, v in self.links.items()},
         }
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load(self, path: str | Path) -> None:
+        p = Path(path)
+        if not p.exists():
+            return
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for ticker, sdata in data.get("stocks", {}).items():
+            if not is_valid_ticker(ticker):
+                continue
+            wg = BoundedMetric(**sdata["weight_guide"])
+            bulls = []
+            for e in sdata.get("bull_evidences", []):
+                e_copy = dict(e)
+                anchor_dict = e_copy.pop("anchor_ref", None)
+                anchor = HistoricalAnchor(**anchor_dict) if anchor_dict else None
+                bulls.append(EvidenceEntry(anchor_ref=anchor, **e_copy))
+            bears = []
+            for e in sdata.get("bear_evidences", []):
+                e_copy = dict(e)
+                anchor_dict = e_copy.pop("anchor_ref", None)
+                anchor = HistoricalAnchor(**anchor_dict) if anchor_dict else None
+                bears.append(EvidenceEntry(anchor_ref=anchor, **e_copy))
+
+            self.stocks[ticker] = StockDossier(
+                ticker=ticker,
+                weight_guide=wg,
+                bull_evidences=bulls,
+                bear_evidences=bears,
+                historical_cases=sdata.get("historical_cases", []),
+            )
+        for link_str, ldata in data.get("links", {}).items():
+            parts = link_str.split("->")
+            if len(parts) == 2 and is_valid_ticker(parts[0]) and is_valid_ticker(parts[1]):
+                strength = BoundedMetric(**ldata["strength"])
+                supps = []
+                for e in ldata.get("supporting_evidences", []):
+                    e_copy = dict(e)
+                    anchor_dict = e_copy.pop("anchor_ref", None)
+                    anchor = HistoricalAnchor(**anchor_dict) if anchor_dict else None
+                    supps.append(EvidenceEntry(anchor_ref=anchor, **e_copy))
+                weaks = []
+                for e in ldata.get("weakening_evidences", []):
+                    e_copy = dict(e)
+                    anchor_dict = e_copy.pop("anchor_ref", None)
+                    anchor = HistoricalAnchor(**anchor_dict) if anchor_dict else None
+                    weaks.append(EvidenceEntry(anchor_ref=anchor, **e_copy))
+                anchors_list = [HistoricalAnchor(**a) for a in ldata.get("anchors", [])]
+
+                self.links[(parts[0], parts[1])] = LinkDossier(
+                    source_ticker=parts[0],
+                    target_ticker=parts[1],
+                    relation_note=ldata.get("relation_note", ""),
+                    strength=strength,
+                    supporting_evidences=supps,
+                    weakening_evidences=weaks,
+                    historical_cases=ldata.get("historical_cases", []),
+                    anchors=anchors_list,
+                )
+
+    @classmethod
+    def load_latest_or_init(cls, base_runs_dir: str | Path, today_str: str) -> DossierLedger:
+        """自動從 runs 目錄尋找小於 today_str 的最新前一日 dossier_ledger.json。"""
+        runs_dir = Path(base_runs_dir)
+        ledger = cls()
+        if not runs_dir.exists():
+            return ledger
+
+        date_dirs = [d for d in runs_dir.iterdir() if d.is_dir() and d.name < today_str]
+        date_dirs.sort(key=lambda d: d.name, reverse=True)
+
+        for d in date_dirs:
+            candidate = d / "dossier_ledger.json"
+            if candidate.exists():
+                ledger.load(candidate)
+                break
+
+        return ledger
+

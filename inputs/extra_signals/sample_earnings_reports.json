@@ -1,0 +1,44 @@
+[
+  {
+    "ticker": "2330",
+    "authority": "mops",
+    "url": "https://mops.twse.com.tw/mops/web/t05st10_ifrs",
+    "content_as_of": "2026-10-31T08:00:00+08:00",
+    "category": "fundamental",
+    "headline": "台積電最新單月營收年增達 39.6%，先進製程產能滿載",
+    "summary": "受惠 AI HPC 與高階智慧型手機晶片強勁拉貨，3nm/5nm 先進製程利用率維持 100%，月營收創同期歷史新高。",
+    "metrics": {
+      "revenue_yoy_pct": 39.6,
+      "gross_margin_pct": 57.8,
+      "decision_impact_pct": 3.5
+    }
+  },
+  {
+    "ticker": "2382",
+    "authority": "mops",
+    "url": "https://mops.twse.com.tw/mops/web/t05st10_ifrs",
+    "content_as_of": "2026-10-31T08:00:00+08:00",
+    "category": "fundamental",
+    "headline": "廣達受惠新一代 AI 伺服器機櫃量產出貨，營收動能顯著轉強",
+    "summary": "GB200 伺服器進入密集組裝與出貨期，AI 伺服器營收佔比預計突破 50%，毛利率維持高檔。",
+    "metrics": {
+      "revenue_yoy_pct": 28.5,
+      "server_share_pct": 52.0,
+      "decision_impact_pct": 3.0
+    }
+  },
+  {
+    "ticker": "6274",
+    "authority": "mops",
+    "url": "https://mops.twse.com.tw/mops/web/t05st10_ifrs",
+    "content_as_of": "2026-10-31T08:00:00+08:00",
+    "category": "fundamental",
+    "headline": "台燿高階銅箔基板 (CCL) 通過多家 CSP 雲端大廠認證，稼動率突破 90%",
+    "summary": "AI 伺服器高速傳輸需求推升高階材料升級，M7/M8 等級高頻高速材料供不應求，訂單能見度直達明年上半年。",
+    "metrics": {
+      "capacity_utilization_pct": 92.0,
+      "hpc_material_growth_pct": 45.0,
+      "decision_impact_pct": 2.8
+    }
+  }
+]

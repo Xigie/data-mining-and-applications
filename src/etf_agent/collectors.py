@@ -532,15 +532,19 @@ def load_extra_signals(signal_dir: str | Path = "inputs/extra_signals") -> list[
                 ticker = str(item.get("ticker", "")).strip()
                 if not is_valid_ticker(ticker):
                     continue
+                # 支援新舊欄位名稱 (statement / summary / headline) 與 values / metrics
+                stmt = str(item.get("statement") or item.get("summary") or item.get("headline") or "")
+                vals_raw = item.get("values") or item.get("metrics") or {}
+                vals = {str(k): float(v) for k, v in vals_raw.items()}
                 cards.append(
                     ExtraSignalCard(
                         ticker=ticker,
                         authority=str(item.get("authority", "mops")),
                         url=str(item.get("url", "https://mops.twse.com.tw/mops/web/t05st10_ifrs")),
                         content_as_of=str(item.get("content_as_of", "2026-10-26T18:00:00+08:00")),
-                        topic=str(item.get("topic", "fundamental_signal")),
-                        statement=str(item.get("statement", "")),
-                        values={str(k): float(v) for k, v in (item.get("values") or {}).items()},
+                        topic=str(item.get("topic") or item.get("category") or "fundamental_signal"),
+                        statement=stmt,
+                        values=vals,
                         polarity=str(item.get("polarity", "positive")),
                         linked_target_ticker=item.get("linked_target_ticker"),
                     )
